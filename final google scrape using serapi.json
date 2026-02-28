@@ -1,0 +1,601 @@
+{
+  "name": "final google scrape using serapi",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "// Get input data\nconst apiResponse = $input.first().json;\n\n// Get previous data - check if we're in a loop or first run\nlet previousData;\nif ($('Initialize Variables').isExecuted) {\n  previousData = $('Initialize Variables').first().json;\n} else {\n  previousData = {\n    collectedLeads: [],\n    targetLeads: 10, // Default target leads, adjust as needed\n    niche: '',\n    location: '',\n    currentPage: 1\n  };\n}\n\nconst currentCollected = previousData.collectedLeads || [];\nconst targetLeads = previousData.targetLeads;\nconst niche = previousData.niche;\nconst location = previousData.location;\nconst currentPage = previousData.currentPage || 1;\n\nconsole.log('=== ITERATION', currentPage, '===');\nconsole.log('Current collected:', currentCollected.length);\nconsole.log('Target leads:', targetLeads);\n\n// SAFETY: Maximum 10 iterations to prevent infinite loops\nif (currentPage > 10) {\n  console.log('⚠️ MAX ITERATIONS REACHED! Stopping to prevent infinite loop.');\n  return [{\n    json: {\n      businesses: [],\n      allCollectedLeads: currentCollected.slice(0, targetLeads),\n      totalCollected: currentCollected.length,\n      targetLeads: targetLeads,\n      nextPageToken: null,\n      needsMorePages: false,\n      currentPage: currentPage,\n      niche: niche,\n      location: location\n    }\n  }];\n}\n\n// HARD STOP: If we already have enough, stop immediately\nif (currentCollected.length >= targetLeads) {\n  console.log('✅ Already have enough leads! Stopping.');\n  return [{\n    json: {\n      businesses: [],\n      allCollectedLeads: currentCollected.slice(0, targetLeads),\n      totalCollected: targetLeads,\n      targetLeads: targetLeads,\n      nextPageToken: null,\n      needsMorePages: false,\n      currentPage: currentPage,\n      niche: niche,\n      location: location\n    }\n  }];\n}\n\n// Extract local results\nconst businesses = apiResponse.local_results || [];\nconsole.log('Businesses in this response:', businesses.length);\n\nconst extractedData = [];\n\nfor (const business of businesses) {\n  // Stop if we have enough leads\n  if (currentCollected.length + extractedData.length >= targetLeads) {\n    console.log('🎯 Reached target during extraction');\n    break;\n  }\n  \n  const lead = {\n    businessName: business.title || 'N/A',\n    phone: business.phone || '',\n    address: business.address || '',\n    website: business.website || '',\n    mapsUrl: business.link || '',\n    rating: business.rating || 'N/A',\n    reviews: business.reviews || 0,\n    category: business.type || '',\n    placeId: business.place_id || business.data_id || '',\n    latitude: business.gps_coordinates?.latitude || '',\n    longitude: business.gps_coordinates?.longitude || ''\n  };\n  \n  extractedData.push(lead);\n}\n\n// Get pagination info\nconst serpapi_pagination = apiResponse.serpapi_pagination || {};\nconst nextPageToken = serpapi_pagination.next_page_token || null;\n\nconsole.log('Next page token:', nextPageToken ? 'EXISTS' : 'NULL');\n\n// Combine with previously collected leads\nconst allCollected = [...currentCollected, ...extractedData];\n\n// CRITICAL: Stop if we have enough OR no more pages\nconst needsMorePages = (allCollected.length < targetLeads) && (nextPageToken !== null);\n\nconsole.log('Total collected now:', allCollected.length);\nconsole.log('Needs more pages?', needsMorePages);\nconsole.log('========================');\n\nreturn [{\n  json: {\n    businesses: extractedData,\n    allCollectedLeads: allCollected,\n    totalCollected: allCollected.length,\n    targetLeads: targetLeads,\n    nextPageToken: nextPageToken,\n    needsMorePages: needsMorePages,\n    currentPage: currentPage + 1,\n    niche: niche,\n    location: location\n  }\n}];"
+      },
+      "id": "fae9690b-eefb-4f49-9f17-bcd13d10870e",
+      "name": "Parse SerpAPI Results2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        96,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get all collected leads\nconst allLeads = $input.first().json.allCollectedLeads;\n\n// Return each business as a separate item for processing\nreturn allLeads.map(lead => ({ json: lead }));"
+      },
+      "id": "3b7637bc-5e79-4723-88c9-fffb781b0656",
+      "name": "Split Out Businesses2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        304,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.website }}",
+        "options": {
+          "redirect": {
+            "redirect": {
+              "maxRedirects": 5
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 10000
+        }
+      },
+      "id": "9663270a-d70b-4287-91a0-94525411fdff",
+      "name": "Fetch Website2",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        528,
+        176
+      ],
+      "executeOnce": false,
+      "alwaysOutputData": true,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const html = $input.first().json.data || \"\";\n\n// decode HTML entities\nconst decodedHtml = html\n  .replace(/&#(\\d+);/g, (_, dec) => String.fromCharCode(dec))\n  .replace(/&#x([0-9A-Fa-f]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));\n\n// match mailto emails first\nconst mailtoRegex = /mailto:([^\\?\"'>\\s]+)/gi;\nlet emails = [...decodedHtml.matchAll(mailtoRegex)].map(m => m[1]);\n\n// fallback: standard email format\nif (emails.length === 0) {\n  const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-z]{2,}/gi;\n  emails = decodedHtml.match(emailRegex) || [];\n}\n\n// match obfuscated formats like info(at)domain(dot)com\nif (emails.length === 0) {\n  const obfuscated = decodedHtml.match(\n    /[a-zA-Z0-9._%+-]+\\s?\\(?at\\)?\\s?[a-zA-Z0-9.-]+\\s?\\(?dot\\)?\\s?[a-z]{2,}/gi\n  ) || [];\n\n  emails = obfuscated.map(e =>\n    e.replace(/\\(at\\)| at /i, \"@\")\n     .replace(/\\(dot\\)| dot /i, \".\")\n     .replace(/\\s/g, \"\")\n  );\n}\n\n// remove duplicates\nemails = [...new Set(emails)];\n\nreturn [\n  {\n    email: emails[0] || \"\",\n    found: emails.length\n  }\n];\n"
+      },
+      "id": "fcd1e8a1-f874-47b1-be40-6c66742dbb85",
+      "name": "Extract Email from HTML2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1x0l38ud9KhYGo61iAoFjJb4V7X-JgPB1g-dhWHENnm0",
+          "mode": "list",
+          "cachedResultName": "test spread sheet",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1x0l38ud9KhYGo61iAoFjJb4V7X-JgPB1g-dhWHENnm0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1x0l38ud9KhYGo61iAoFjJb4V7X-JgPB1g-dhWHENnm0/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "NAME": "={{ $('Split Out Businesses2').item.json.businessName }}",
+            "NUMBERf": "={{ $('Split Out Businesses2').item.json.phone?.replace(/\\s+/g, \"\") || \"\" }}\n",
+            "WEBSITE": "={{ $('Split Out Businesses2').item.json.website }}",
+            "RATINGS": "={{ $('Split Out Businesses2').item.json.rating }}",
+            "EMAIL": "={{ $json.email }}",
+            "description": "bmbn"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "NAME",
+              "displayName": "NAME",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "NUMBERf",
+              "displayName": "NUMBERf",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "WEBSITE",
+              "displayName": "WEBSITE",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "EMAIL",
+              "displayName": "EMAIL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "RATINGS",
+              "displayName": "RATINGS",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "description",
+              "displayName": "description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "11d94f20-e8bf-4c5d-922b-64271ce51227",
+      "name": "Append to Google Sheets2",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [
+        1232,
+        -48
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "lj3CA6TvO2ukYOen",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        720,
+        176
+      ],
+      "id": "db1e1e81-35e0-4c23-8648-10dc2a4f0442",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        688,
+        -64
+      ],
+      "id": "6636c9f9-c98a-49e5-8015-d5b040048af8",
+      "name": "Loop Over Items1"
+    },
+    {
+      "parameters": {
+        "path": "bb172a18-22e5-446d-989f-70c719858ae3",
+        "formTitle": "Google Maps Lead Generator",
+        "formDescription": "Enter your search criteria to collect business leads from Google Maps",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Business Niche",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Location",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Number of Leads",
+              "fieldType": "number",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "9fc58679-bdf8-4bd7-bd11-0073330400b1",
+      "name": "Form Trigger",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2,
+      "position": [
+        -1056,
+        144
+      ],
+      "webhookId": "bb172a18-22e5-446d-989f-70c719858ae3"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "niche",
+              "name": "niche",
+              "value": "={{ $json['Business Niche'] }}",
+              "type": "string"
+            },
+            {
+              "id": "location",
+              "name": "location",
+              "value": "={{ $json.Location }}",
+              "type": "string"
+            },
+            {
+              "id": "targetLeads",
+              "name": "targetLeads",
+              "value": "={{ $json['Number of Leads'] }}",
+              "type": "number"
+            },
+            {
+              "id": "collectedLeads",
+              "name": "collectedLeads",
+              "value": "=[]",
+              "type": "array"
+            },
+            {
+              "id": "currentPage",
+              "name": "currentPage",
+              "value": "=1",
+              "type": "number"
+            },
+            {
+              "id": "a38c984d-9b52-4934-aeab-c68d7b643830",
+              "name": "nextPageToken",
+              "value": "",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "8ff308a6-376e-4a1b-8f33-08133756729a",
+      "name": "Initialize Variables",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [
+        -832,
+        144
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const target = $input.first().json.targetLeads || 0;\nconst step = 20;\n\nlet output = [];\nlet current = step;\n\nwhile (current <= target) {\n  output.push({ value: current });\n  current += step;\n}\n\n// add the next step if we didn't land exactly on target\nif (output.length === 0 || output[output.length - 1].value < target) {\n  output.push({ value: current });\n}\n\nreturn output;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -608,
+        144
+      ],
+      "id": "3005ce2b-8d8d-4adc-af54-162c1ba93723",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -304,
+        -96
+      ],
+      "id": "3c321e63-de9b-430b-8dec-1b37de06ce6a",
+      "name": "Loop Over Items2"
+    },
+    {
+      "parameters": {
+        "url": "=https://serpapi.com/search.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "engine",
+              "value": "google_maps"
+            },
+            {
+              "name": "q",
+              "value": "={{ $('Initialize Variables').item.json.niche }} in {{ $('Initialize Variables').item.json.location }}"
+            },
+            {
+              "name": "type",
+              "value": "search"
+            },
+            {
+              "name": "api_key",
+              "value": "7cb0ddde0618e027192ce3080caa2b399cf0a280ec6120098006544087928277"
+            },
+            {
+              "name": "num",
+              "value": "20"
+            },
+            {
+              "name": "hl",
+              "value": "en"
+            },
+            {
+              "value": "="
+            },
+            {
+              "name": "next_page_token",
+              "value": "={{ $json.value }}"
+            }
+          ]
+        },
+        "options": {
+          "queryParameterArrays": "repeat"
+        }
+      },
+      "id": "bb1cca33-d96a-4b01-8dee-69560912f96a",
+      "name": "SerpAPI Google Maps Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        16,
+        -80
+      ],
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "mauZspVwvfw3Phep",
+          "name": "Query Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 1
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        992,
+        -48
+      ],
+      "id": "036a244b-3170-4019-9067-8bd651531b40",
+      "name": "Wait",
+      "webhookId": "847bc595-da27-49d7-9797-eb0c53e9d758"
+    }
+  ],
+  "pinData": {
+    "Form Trigger": [
+      {
+        "json": {
+          "Business Niche": "veg restaurant",
+          "Location": "andheri",
+          "Number of Leads": 50,
+          "submittedAt": "2026-02-21T08:22:08.380Z",
+          "formMode": "test"
+        },
+        "pairedItem": {
+          "item": 0
+        }
+      }
+    ],
+    "Initialize Variables": [
+      {
+        "json": {
+          "niche": "veg restaurant",
+          "location": "andheri",
+          "targetLeads": 50,
+          "collectedLeads": [],
+          "currentPage": 1,
+          "nextPageToken": ""
+        },
+        "pairedItem": {
+          "item": 0
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Parse SerpAPI Results2": {
+      "main": [
+        [
+          {
+            "node": "Split Out Businesses2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Out Businesses2": {
+      "main": [
+        [
+          {
+            "node": "Fetch Website2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Website2": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Email from HTML2": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append to Google Sheets2": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Extract Email from HTML2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items1": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Form Trigger": {
+      "main": [
+        [
+          {
+            "node": "Initialize Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Initialize Variables": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items2": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "SerpAPI Google Maps Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SerpAPI Google Maps Search": {
+      "main": [
+        [
+          {
+            "node": "Parse SerpAPI Results2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "Append to Google Sheets2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "fa8dfd6b-150a-4aa3-8fff-29bb0db63684",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "2354efd3bcea4235d79139e59daa1940eb56db7f94bc619cc4432e7bc5dda66e"
+  },
+  "id": "rjXbi4Uemk3Bj7ub",
+  "tags": []
+}
